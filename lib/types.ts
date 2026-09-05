@@ -1,4 +1,4 @@
-export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+export type MealType = "breakfast" | "morning_snack" | "lunch" | "afternoon_snack" | "dinner";
 
 export type FoodItem = {
   id: string;
@@ -6,17 +6,20 @@ export type FoodItem = {
   brand?: string;
   grams: number;
   kcal: number;
-  protein: number;
-  fat: number;
-  carbs: number;
+  protein: number; // Białko w gramach
+  fat: number;     // Tłuszcz w gramach
+  carbs: number;   // Węglowodany w gramach
+  fiber?: number;  // Błonnik w gramach
   photo?: string;
   note?: string;
+  category?: string;
 };
 
 export type DayLog = {
-  date: string;
+  date: string; // YYYY-MM-DD
   meals: Record<MealType, FoodItem[]>;
   waterMl: number;
+  notes?: string;
 };
 
 export type Goals = {
@@ -41,7 +44,7 @@ export type Profile = {
   glassMl: number;
 };
 
-export type PlannedFood = {
+export type RecipeIngredient = {
   name: string;
   grams: number;
   kcal: number;
@@ -50,13 +53,21 @@ export type PlannedFood = {
   carbs: number;
 };
 
-export type DietPlan = {
+export type Recipe = {
+  id: string;
   title: string;
-  summary: string;
-  days: {
-    label: string;
-    meals: Record<MealType, PlannedFood[]>;
-  }[];
+  category: "Śniadania" | "Obiady" | "Kolacje" | "Wysokobiałkowe" | "Desery Fit" | "Szybkie (<15 min)";
+  timeMinutes: number;
+  servings: number;
+  image: string;
+  description: string;
+  kcal: number;
+  protein: number;
+  fat: number;
+  carbs: number;
+  tags: string[];
+  ingredients: RecipeIngredient[];
+  instructions: string[];
 };
 
 export type AnalyzeResult = {
@@ -69,4 +80,5 @@ export type AnalyzeResult = {
 export type Settings = {
   theme: "light" | "dark";
   keys: string[];
+  favoriteFoodIds: string[];
 };

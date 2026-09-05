@@ -1,41 +1,34 @@
 import type { Metadata, Viewport } from "next";
-import { Geist } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin", "latin-ext"],
-});
-
 export const metadata: Metadata = {
-  title: "Kalorix",
-  description: "Dziennik kalorii ze zdjęciem i AI",
-  applicationName: "Kalorix",
-  icons: {
-    icon: "/icon-192.png",
-    apple: "/icon-192.png",
-  },
+  title: "Kalorix Fitatu - Licznik Kalorii & Makro",
+  description: "Nowoczesna, minimalistyczna aplikacja do liczenia kalorii z asystentem AI i bazą przepisów",
+  manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
+    statusBarStyle: "default",
     title: "Kalorix",
-    statusBarStyle: "black-translucent",
   },
-  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#f4f5f7",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
+  themeColor: "#10b981",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
-    <html lang="pl" className={`${geistSans.variable} h-full antialiased`}>
-      <body className="min-h-full bg-[#f4f5f7] font-sans text-[#1a1a1a]">{children}</body>
+    <html lang="pl">
+      <body className="antialiased select-none">{children}</body>
     </html>
   );
 }

@@ -1,78 +1,320 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { ACTIVITY_LABELS, GOAL_LABELS, MEAL_LABELS, addItems, addWater, loadDay, loadDiet, loadGoals, loadProfile, removeItem, saveDiet, saveGoals, saveProfile, suggestedGoals, todayISO, totals } from "@/lib/storage";
-import { addKeys, analyzePhoto, generateDiet, getKeys, keyStates, removeKey, searchFood } from "@/lib/ai";
-import { compressImage, uid } from "@/lib/image";
-import type { AnalyzeResult, DayLog, DietPlan, FoodItem, Goals, MealType, Profile } from "@/lib/types";
+import React, { useState, useEffect, useMemo } from "react";
+import { Navbar, NavTab } from "./Navbar";
+import { CalendarHeader } from "./CalendarHeader";
+import { MacroSummary } from "./MacroSummary";
+import { MealCard } from "./MealCard";
+import { PortionModal } from "./PortionModal";
+import { SearchFoodModal } from "./SearchFoodModal";
+import { AIScannerModal } from "./AIScannerModal";
+import { RecipesView } from "./RecipesView";
+import { WaterTracker } from "./WaterTracker";
+import { ProfileSettings } from "./ProfileSettings";
+import { CustomProductModal } from "./CustomProductModal";
+import { AddActionModal } from "./AddActionModal";
 
-type Tab = "diary" | "plan" | "recipes" | "settings";
-type Sheet = "none" | "add" | "search" | "manual" | "review" | "calendar";
-const MEALS: MealType[] = ["breakfast", "lunch", "dinner", "snack"];
-const input = "w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-[15px] text-slate-950 placeholder:text-slate-400 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10";
-const primary = "rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50";
-const recipes = [
-  ["Owsianka proteinowa z malinami", "Śniadanie", 482, 34, 12, 61, "Płatki owsiane, skyr, maliny, masło orzechowe"],
-  ["Kurczak teriyaki z ryżem", "Obiad", 615, 46, 15, 73, "Pierś z kurczaka, ryż, brokuł, sos teriyaki"],
-  ["Makaron z pesto i mozzarellą", "Kolacja", 548, 25, 23, 63, "Makaron pełnoziarnisty, pesto, mozzarella, pomidorki"],
-  ["Twaróg z owocami", "Przekąska", 307, 31, 7, 31, "Twaróg, borówki, miód, migdały"],
-] as const;
+import {
+  loadDay,
+  saveDay,
+  loadGoals,
+  saveGoals,
+  loadProfile,
+  saveProfile,
+  loadSettings,
+  saveSettings,
+  loadRecipes,
+  saveRecipes,
+  loadCustomProducts,
+  saveCustomProduct,
+  todayISO,
+  calculateDayTotals,
+  addItemsToMeal,
+  removeFoodItem,
+  updateFoodItem,
+  addWater,
+} from "@/lib/storage";
+import { BaseProduct } from "@/lib/database";
+import { DayLog, FoodItem, Goals, MealType, Profile, Recipe, Settings } from "@/lib/types";
+import { uid } from "@/lib/image";
 
-function offsetDate(offset: number) { const d = new Date(); d.setDate(d.getDate() + offset); return todayISO(d); }
-function dayLabel(date: string) { return new Intl.DateTimeFormat("pl-PL", { weekday: "long", day: "numeric", month: "long" }).format(new Date(`${date}T12:00:00`)); }
-function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block"><span className="mb-1.5 block text-xs font-semibold text-slate-600">{label}</span>{children}</label>; }
-function Macro({ label, value, goal, color }: { label: string; value: number; goal: number; color: string }) { return <div><div className="mb-1 flex justify-between text-[10px] text-slate-500"><span>{label}</span><span>{Math.round(value)} / {goal} g</span></div><div className="h-1.5 rounded-full bg-slate-100"><div className={`h-full rounded-full ${color}`} style={{ width: `${Math.min(100, value / Math.max(goal, 1) * 100)}%` }} /></div></div>; }
+const MEAL_TYPES: MealType[] = [
+  "breakfast",
+  "morning_snack",
+  "lunch",
+  "afternoon_snack",
+  "dinner",
+];
 
 export default function AppShell() {
-  const [tab, setTab] = useState<Tab>("diary");
-  const [date, setDate] = useState(todayISO());
-  const [day, setDay] = useState<DayLog>(() => loadDay(todayISO()));
+  const [mounted, setMounted] = useState(false);
+  const [currentTab, setCurrentTab] = useState<NavTab>("diary");
+  const [selectedDate, setSelectedDate] = useState<string>(todayISO());
+
+  // State
+  const [dayLog, setDayLog] = useState<DayLog>(() => loadDay(todayISO()));
   const [goals, setGoals] = useState<Goals>(loadGoals);
   const [profile, setProfile] = useState<Profile>(loadProfile);
-  const [diet, setDiet] = useState<DietPlan | null>(loadDiet);
-  const [sheet, setSheet] = useState<Sheet>("none");
-  const [meal, setMeal] = useState<MealType>("lunch");
-  const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  const [hint, setHint] = useState(""); const [preview, setPreview] = useState(""); const [review, setReview] = useState<AnalyzeResult | null>(null);
-  const [query, setQuery] = useState(""); const [hits, setHits] = useState<AnalyzeResult["items"]>([]);
-  const [newKey, setNewKey] = useState(""); const [keys, setKeys] = useState(() => keyStates()); const [notes, setNotes] = useState("");
-  const [manual, setManual] = useState({ name: "", grams: "100", kcal: "", protein: "", fat: "", carbs: "" });
-  const camera = useRef<HTMLInputElement>(null); const gallery = useRef<HTMLInputElement>(null);
-  const sum = useMemo(() => totals(day), [day]);
-  const selectDate = (next: string) => { setDate(next); setDay(loadDay(next)); setSheet("none"); };
-  const openAdd = (nextMeal: MealType) => { setMeal(nextMeal); setError(""); setSheet("add"); };
-  const commit = (items: AnalyzeResult["items"], photo?: string) => { const clean: FoodItem[] = items.map((item) => ({ ...item, id: uid(), photo })); setDay(addItems(date, meal, clean)); setSheet("none"); setPreview(""); setReview(null); setHint(""); };
-  const photo = async (file?: File) => { if (!file) return; setBusy(true); setError(""); try { const image = await compressImage(file); setPreview(image); const result = await analyzePhoto(image, hint); setReview(result); setMeal(result.mealGuess); setSheet("review"); } catch (e) { setError(e instanceof Error ? e.message : "Nie udało się przeanalizować zdjęcia."); setSheet("add"); } finally { setBusy(false); } };
-  const search = async () => { if (!query.trim()) return; setBusy(true); setError(""); try { setHits(await searchFood(query)); } catch (e) { setError(e instanceof Error ? e.message : "Nie udało się wyszukać produktu."); } finally { setBusy(false); } };
-  const createDiet = async () => { setBusy(true); setError(""); try { const result = await generateDiet(profile, goals, notes); saveDiet(result); setDiet(result); } catch (e) { setError(e instanceof Error ? e.message : "Nie udało się stworzyć planu."); } finally { setBusy(false); } };
-  const nav = [["diary", "▤", "Dziennik"], ["plan", "◎", "Plan"], ["recipes", "⌁", "Przepisy"], ["settings", "⚙", "Ustawienia"]] as const;
-  return <div className="mx-auto min-h-[100dvh] max-w-md bg-[#f6f8f6] text-slate-900">
-    <header className="sticky top-0 z-20 border-b border-slate-100 bg-[#f6f8f6]/95 px-5 pb-3 pt-[max(16px,env(safe-area-inset-top))] backdrop-blur"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-emerald-600">Kalorix Next</p><button onClick={() => setSheet("calendar")} className="mt-1 text-sm font-semibold capitalize">{date === todayISO() ? "Dzisiaj" : dayLabel(date)} <span className="text-slate-400">⌄</span></button></div><button onClick={() => setSheet("calendar")} className="grid h-10 w-10 place-items-center rounded-xl bg-white text-lg shadow-sm ring-1 ring-slate-100">▦</button></div>{tab === "diary" && <div className="mt-4 grid grid-cols-7 gap-1">{[-3,-2,-1,0,1,2,3].map((n) => { const item = offsetDate(n), d = new Date(`${item}T12:00:00`), active = item === date; return <button key={item} onClick={() => selectDate(item)} className={`rounded-xl py-2 text-center ${active ? "bg-emerald-600 text-white" : "text-slate-500"}`}><span className="block text-[10px] font-bold">{["N","P","W","Ś","C","P","S"][d.getDay()]}</span><span className="block text-sm font-bold">{d.getDate()}</span></button>; })}</div>}</header>
-    <main className="px-5 pb-28 pt-5">
-      {tab === "diary" && <Diary day={day} goals={goals} sum={sum} profile={profile} onAdd={openAdd} onRemove={(kind, id) => setDay(removeItem(date, kind, id))} onWater={() => setTab("plan")} />}
-      {tab === "plan" && <Plan profile={profile} setProfile={setProfile} goals={goals} setGoals={setGoals} water={day.waterMl} diet={diet} notes={notes} setNotes={setNotes} busy={busy} error={error} onWater={(ml) => setDay(addWater(date, ml))} onGenerate={() => { saveProfile(profile); saveGoals(goals); void createDiet(); }} onApply={(kind, foods) => { setDay(addItems(date, kind, foods.map((food) => ({ ...food, id: uid() })))); setTab("diary"); }} />}
-      {tab === "recipes" && <Recipes onAdd={(recipe) => { const kind: MealType = recipe[1] === "Śniadanie" ? "breakfast" : recipe[1] === "Obiad" ? "lunch" : recipe[1] === "Kolacja" ? "dinner" : "snack"; setMeal(kind); commit([{ name: recipe[0], grams: 1, kcal: recipe[2], protein: recipe[3], fat: recipe[4], carbs: recipe[5] }]); }} />}
-      {tab === "settings" && <Settings keys={keys} value={newKey} setValue={setNewKey} onAdd={() => { addKeys(newKey); setNewKey(""); setKeys(keyStates()); }} onRemove={(key) => { removeKey(key); setKeys(keyStates()); }} />}
-    </main>
-    <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white/95 px-4 pb-[calc(9px+env(safe-area-inset-bottom))] pt-2 backdrop-blur"><div className="mx-auto grid max-w-md grid-cols-4">{nav.map(([id, icon, label]) => <button key={id} onClick={() => setTab(id)} className={`grid place-items-center gap-1 py-1 text-[10px] font-semibold ${tab === id ? "text-emerald-600" : "text-slate-400"}`}><span className="text-lg leading-4">{icon}</span>{label}</button>)}</div></nav>
-    <input ref={camera} className="hidden" type="file" accept="image/*" capture="environment" onChange={(e) => void photo(e.target.files?.[0])} /><input ref={gallery} className="hidden" type="file" accept="image/*" onChange={(e) => void photo(e.target.files?.[0])} />
-    {sheet !== "none" && <Modal close={() => !busy && setSheet("none")}>
-      {busy ? <div className="py-12 text-center"><div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-emerald-100 border-t-emerald-600" /><p className="font-semibold">AI pracuje nad Twoim posiłkiem…</p></div> : <>
-      {sheet === "add" && <><h2>Dodaj do: {MEAL_LABELS[meal]}</h2><p className="mt-1 text-sm text-slate-500">Dopisz szczegół przed zdjęciem — AI policzy dokładniej.</p><textarea className={`${input} mt-4 min-h-24`} value={hint} onChange={(e) => setHint(e.target.value)} placeholder="Np. herbata z 2 łyżkami cukru, zjadłem połowę paczki orzeszków…" /><div className="mt-3 grid grid-cols-2 gap-2"><button className={primary} onClick={() => camera.current?.click()}>Zrób zdjęcie</button><button className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold" onClick={() => gallery.current?.click()}>Wybierz zdjęcie</button><button className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold" onClick={() => setSheet("search")}>Szukaj produktu</button><button className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold" onClick={() => setSheet("manual")}>Dodaj ręcznie</button></div>{error && <p className="mt-3 text-sm text-rose-600">{error}</p>}</>}
-      {sheet === "review" && review && <><h2>Sprawdź porcję</h2><p className="mt-1 text-sm text-slate-500">Popraw ilość, jeśli zjadłeś mniej lub więcej.</p>{preview && <img src={preview} alt="Analizowany posiłek" className="mt-4 h-32 w-full rounded-2xl object-cover" />}{review.items.map((item, index) => <div key={`${item.name}-${index}`} className="mt-3 rounded-xl border border-slate-200 p-3"><div className="flex gap-3"><div className="min-w-0 flex-1"><b className="block text-sm">{item.name}</b><p className="mt-1 text-xs text-slate-500">{item.kcal} kcal · Białko {Math.round(item.protein)} g · Tłuszcze {Math.round(item.fat)} g · Węglowodany {Math.round(item.carbs)} g</p></div><div className="w-24"><label className="text-[10px] font-bold text-slate-500">ZJEDZONE G</label><input className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-right text-sm text-slate-950" value={item.grams} inputMode="numeric" onChange={(e) => { const copy = structuredClone(review); copy.items[index].grams = Math.max(1, Number(e.target.value) || 0); setReview(copy); }} /></div></div></div>)}<MealPicker meal={meal} setMeal={setMeal} /><button className={`${primary} mt-4 w-full`} onClick={() => commit(review.items, preview)}>Dodaj do dziennika</button></>}
-      {sheet === "search" && <><h2>Szukaj produktu</h2><p className="mt-1 text-sm text-slate-500">Wpisz np. „jogurt grecki 200 g”.</p><div className="mt-4 flex gap-2"><input className={input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Szukaj produktu" /><button className={primary} onClick={() => void search()}>Szukaj</button></div><MealPicker meal={meal} setMeal={setMeal} /><div className="mt-3 divide-y divide-slate-100">{hits.map((hit, index) => <button key={`${hit.name}-${index}`} className="flex w-full items-center justify-between py-3 text-left" onClick={() => commit([hit])}><span><b className="block text-sm">{hit.name}</b><small className="text-slate-500">{hit.grams} g · Białko {Math.round(hit.protein)} g · Tłuszcze {Math.round(hit.fat)} g · Węglowodany {Math.round(hit.carbs)} g</small></span><b className="text-sm">{hit.kcal} kcal</b></button>)}</div>{error && <p className="mt-3 text-sm text-rose-600">{error}</p>}</>}
-      {sheet === "manual" && <><h2>Dodaj ręcznie</h2><div className="mt-4 grid grid-cols-2 gap-3"><div className="col-span-2"><Field label="Nazwa produktu"><input className={input} value={manual.name} onChange={(e) => setManual({ ...manual, name: e.target.value })} placeholder="Np. Herbata z cukrem" /></Field></div>{([['grams','Ile zjedzone (g / ml)'],['kcal','Kalorie'],['protein','Białko (g)'],['fat','Tłuszcze (g)'],['carbs','Węglowodany (g)']] as const).map(([key,label]) => <Field key={key} label={label}><input className={input} inputMode="decimal" value={manual[key]} onChange={(e) => setManual({ ...manual, [key]: e.target.value })} placeholder="0" /></Field>)}</div><MealPicker meal={meal} setMeal={setMeal} /><button className={`${primary} mt-4 w-full`} onClick={() => { if (!manual.name.trim()) return; commit([{ name: manual.name, grams: Number(manual.grams) || 1, kcal: Number(manual.kcal) || 0, protein: Number(manual.protein) || 0, fat: Number(manual.fat) || 0, carbs: Number(manual.carbs) || 0 }]); setManual({ name: "", grams: "100", kcal: "", protein: "", fat: "", carbs: "" }); }}>Dodaj do dziennika</button></>}
-      {sheet === "calendar" && <><h2>Kalendarz</h2><p className="mt-1 text-sm text-slate-500">Wybierz dzień dziennika.</p><input className={`${input} mt-4`} type="date" value={date} onChange={(e) => selectDate(e.target.value)} /><div className="mt-4 grid grid-cols-7 gap-1">{Array.from({ length: 28 }, (_, i) => { const item = offsetDate(i - 14), d = new Date(`${item}T12:00:00`); return <button key={item} onClick={() => selectDate(item)} className={`rounded-lg py-2 text-sm ${item === date ? "bg-emerald-600 font-bold text-white" : "bg-slate-50"}`}>{d.getDate()}</button>; })}</div></>}
-      </>}
-    </Modal>}
-  </div>;
+  const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [recipes, setRecipes] = useState<Recipe[]>(loadRecipes);
+  const [customProducts, setCustomProducts] = useState<BaseProduct[]>(loadCustomProducts);
+
+  // Modals state
+  const [activeMealForAdd, setActiveMealForAdd] = useState<MealType>("lunch");
+  const [showAddActionModal, setShowAddActionModal] = useState(false);
+  const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showAIScannerModal, setShowAIScannerModal] = useState(false);
+  const [showCustomProductModal, setShowCustomProductModal] = useState(false);
+
+  // Portion Modal state
+  const [selectedProductForPortion, setSelectedProductForPortion] = useState<BaseProduct | null>(null);
+  const [editingFoodItem, setEditingFoodItem] = useState<{ meal: MealType; item: FoodItem } | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+    setDayLog(loadDay(selectedDate));
+  }, [selectedDate]);
+
+  const dark = settings.theme === "dark";
+
+  // Recalculate daily totals
+  const dayTotals = useMemo(() => calculateDayTotals(dayLog), [dayLog]);
+
+  // Handlers
+  const handleOpenAddForMeal = (meal: MealType) => {
+    setActiveMealForAdd(meal);
+    setShowAddActionModal(true);
+  };
+
+  const handleSelectAddOption = (option: "search" | "ai" | "recipes" | "custom") => {
+    setShowAddActionModal(false);
+    if (option === "search") {
+      setShowSearchModal(true);
+    } else if (option === "ai") {
+      setShowAIScannerModal(true);
+    } else if (option === "recipes") {
+      setCurrentTab("recipes");
+    } else if (option === "custom") {
+      setShowCustomProductModal(true);
+    }
+  };
+
+  const handleProductSelectedFromSearch = (product: BaseProduct, meal: MealType) => {
+    setShowSearchModal(false);
+    setActiveMealForAdd(meal);
+    setSelectedProductForPortion(product);
+  };
+
+  const handleConfirmPortion = (meal: MealType, itemData: Omit<FoodItem, "id">) => {
+    if (editingFoodItem) {
+      // Editing existing item
+      const updated: FoodItem = {
+        ...itemData,
+        id: editingFoodItem.item.id,
+      };
+      const newDay = updateFoodItem(selectedDate, meal, updated);
+      setDayLog(newDay);
+      setEditingFoodItem(null);
+    } else {
+      // Adding new item
+      const newItem: FoodItem = {
+        ...itemData,
+        id: uid(),
+      };
+      const newDay = addItemsToMeal(selectedDate, meal, [newItem]);
+      setDayLog(newDay);
+      setSelectedProductForPortion(null);
+    }
+  };
+
+  const handleDeleteItem = (meal: MealType, id: string) => {
+    const newDay = removeFoodItem(selectedDate, meal, id);
+    setDayLog(newDay);
+  };
+
+  const handleEditItem = (meal: MealType, item: FoodItem) => {
+    setEditingFoodItem({ meal, item });
+  };
+
+  const handleCommitAIItems = (meal: MealType, items: FoodItem[]) => {
+    const newDay = addItemsToMeal(selectedDate, meal, items);
+    setDayLog(newDay);
+    setShowAIScannerModal(false);
+  };
+
+  const handleAddRecipeToDay = (date: string, meal: MealType, items: FoodItem[]) => {
+    const newDay = addItemsToMeal(date, meal, items);
+    if (date === selectedDate) {
+      setDayLog(newDay);
+    }
+  };
+
+  const handleAddWater = (ml: number) => {
+    const newDay = addWater(selectedDate, ml);
+    setDayLog(newDay);
+  };
+
+  const handleSaveCustomProduct = (prod: BaseProduct) => {
+    saveCustomProduct(prod);
+    setCustomProducts(loadCustomProducts());
+    // Directly open portion modal for this newly created product
+    setSelectedProductForPortion(prod);
+  };
+
+  if (!mounted) {
+    return <div className="min-h-screen bg-slate-50" />;
+  }
+
+  return (
+    <div className={`min-h-[100dvh] transition-colors ${dark ? "bg-zinc-950 text-zinc-100" : "bg-slate-50 text-gray-900"}`}>
+      <div className="mx-auto flex min-h-[100dvh] max-w-md flex-col shadow-2xl">
+        {/* Sticky Calendar Header in Diary Tab */}
+        {currentTab === "diary" && (
+          <CalendarHeader
+            selectedDate={selectedDate}
+            onDateChange={(d) => setSelectedDate(d)}
+            dark={dark}
+          />
+        )}
+
+        {/* Main Content Area */}
+        <main className="flex-1 overflow-y-auto px-4 pt-3 pb-24 space-y-4">
+          {/* TAB 1: DZIENNIK (Fitatu Style) */}
+          {currentTab === "diary" && (
+            <>
+              {/* Macro Summary Dashboard */}
+              <MacroSummary totals={dayTotals} goals={goals} dark={dark} />
+
+              {/* Meal Cards */}
+              <div className="space-y-3.5 mt-2">
+                {MEAL_TYPES.map((type) => (
+                  <MealCard
+                    key={type}
+                    type={type}
+                    items={dayLog.meals[type] || []}
+                    onOpenAdd={handleOpenAddForMeal}
+                    onDeleteItem={handleDeleteItem}
+                    onEditItem={handleEditItem}
+                    dark={dark}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* TAB 2: PRZEPISY FIT */}
+          {currentTab === "recipes" && (
+            <RecipesView
+              recipes={recipes}
+              currentDate={selectedDate}
+              onAddRecipeToDay={handleAddRecipeToDay}
+              dark={dark}
+            />
+          )}
+
+          {/* TAB 3: WODA */}
+          {currentTab === "water" && (
+            <WaterTracker
+              waterMl={dayLog.waterMl}
+              profile={profile}
+              onAddWater={handleAddWater}
+              onUpdateWaterGoal={(goal) => {
+                const next = { ...profile, waterGoal: goal };
+                setProfile(next);
+                saveProfile(next);
+              }}
+              dark={dark}
+            />
+          )}
+
+          {/* TAB 4: PROFIL I USTAWIENIA */}
+          {currentTab === "settings" && (
+            <ProfileSettings
+              profile={profile}
+              goals={goals}
+              settings={settings}
+              onSaveProfile={(p) => {
+                setProfile(p);
+                saveProfile(p);
+              }}
+              onSaveGoals={(g) => {
+                setGoals(g);
+                saveGoals(g);
+              }}
+              onSaveSettings={(s) => {
+                setSettings(s);
+                saveSettings(s);
+              }}
+              dark={dark}
+            />
+          )}
+        </main>
+
+        {/* Bottom Navigation */}
+        <Navbar
+          currentTab={currentTab}
+          onSelectTab={(t) => setCurrentTab(t)}
+          onOpenAddModal={() => handleOpenAddForMeal(activeMealForAdd)}
+          dark={dark}
+        />
+
+        {/* MODALS */}
+        {showAddActionModal && (
+          <AddActionModal
+            currentMeal={activeMealForAdd}
+            onSelectOption={handleSelectAddOption}
+            onChangeMeal={(m) => setActiveMealForAdd(m)}
+            onClose={() => setShowAddActionModal(false)}
+            dark={dark}
+          />
+        )}
+
+        {showSearchModal && (
+          <SearchFoodModal
+            initialMeal={activeMealForAdd}
+            customProducts={customProducts}
+            onSelectProduct={handleProductSelectedFromSearch}
+            onOpenCustomProduct={() => {
+              setShowSearchModal(false);
+              setShowCustomProductModal(true);
+            }}
+            onClose={() => setShowSearchModal(false)}
+            dark={dark}
+          />
+        )}
+
+        {/* Portion Modal (Wpisywanie ilości PRZED dodaniem lub edycja) */}
+        {(selectedProductForPortion || editingFoodItem) && (
+          <PortionModal
+            product={selectedProductForPortion}
+            initialMeal={editingFoodItem ? editingFoodItem.meal : activeMealForAdd}
+            editingItem={editingFoodItem ? editingFoodItem.item : null}
+            onClose={() => {
+              setSelectedProductForPortion(null);
+              setEditingFoodItem(null);
+            }}
+            onConfirm={handleConfirmPortion}
+            dark={dark}
+          />
+        )}
+
+        {showAIScannerModal && (
+          <AIScannerModal
+            initialMeal={activeMealForAdd}
+            onCommitItems={handleCommitAIItems}
+            onClose={() => setShowAIScannerModal(false)}
+            dark={dark}
+          />
+        )}
+
+        {showCustomProductModal && (
+          <CustomProductModal
+            onSave={handleSaveCustomProduct}
+            onClose={() => setShowCustomProductModal(false)}
+            dark={dark}
+          />
+        )}
+      </div>
+    </div>
+  );
 }
-
-function Diary({ day, goals, sum, profile, onAdd, onRemove, onWater }: { day: DayLog; goals: Goals; sum: ReturnType<typeof totals>; profile: Profile; onAdd: (kind: MealType) => void; onRemove: (kind: MealType, id: string) => void; onWater: () => void }) { const left = Math.max(0, goals.kcal - sum.kcal), pct = Math.min(100, sum.kcal / Math.max(goals.kcal, 1) * 100); return <><section className="rounded-3xl bg-slate-900 p-5 text-white shadow-xl shadow-slate-900/10"><div className="flex items-center gap-5"><div className="grid h-28 w-28 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(#4ade80 ${pct}%, #334155 0)` }}><div className="grid h-24 w-24 place-items-center rounded-full bg-slate-900 text-center"><b className="text-2xl">{Math.round(left)}</b><span className="text-[10px] text-slate-300">kcal zostało</span></div></div><div><p className="text-sm font-semibold">Twój dzienny cel</p><p className="mt-1 text-xs leading-5 text-slate-300">Zjedz {goals.kcal} kcal. Masz już {Math.round(sum.kcal)} kcal.</p><button onClick={onWater} className="mt-3 rounded-lg bg-white/10 px-3 py-2 text-xs font-bold">💧 Woda: {day.waterMl} / {profile.waterGoal} ml</button></div></div></section><section className="mt-4 grid grid-cols-3 gap-2 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"><Macro label="Białko" value={sum.protein} goal={goals.protein} color="bg-sky-500" /><Macro label="Tłuszcze" value={sum.fat} goal={goals.fat} color="bg-amber-500" /><Macro label="Węglowodany" value={sum.carbs} goal={goals.carbs} color="bg-violet-500" /></section><section className="mt-6"><div className="mb-3 flex justify-between"><h1 className="text-lg font-bold">Posiłki</h1><span className="text-xs text-slate-500">{Math.round(sum.kcal)} / {goals.kcal} kcal</span></div>{MEALS.map((kind) => { const foods = day.meals[kind], kcal = foods.reduce((a,b) => a + b.kcal, 0); return <article key={kind} className="mb-3 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100"><div className="flex justify-between px-4 pb-2 pt-4"><h2 className="text-sm font-bold">{MEAL_LABELS[kind]}</h2><span className="text-xs font-semibold text-slate-500">{Math.round(kcal)} kcal</span></div>{foods.map((food) => <div key={food.id} className="flex justify-between border-t border-slate-100 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{food.name}</p><p className="mt-0.5 text-xs text-slate-500">{food.grams} g · Białko {Math.round(food.protein)} g · Tłuszcze {Math.round(food.fat)} g · Węglowodany {Math.round(food.carbs)} g</p></div><div className="ml-3 text-right"><b className="block text-sm">{food.kcal} kcal</b><button onClick={() => onRemove(kind, food.id)} className="mt-1 text-[11px] font-semibold text-rose-500">Usuń</button></div></div>)}<button onClick={() => onAdd(kind)} className="w-full border-t border-slate-100 py-3 text-sm font-bold text-emerald-600">＋ Dodaj produkt</button></article>; })}</section></>; }
-
-function Plan({ profile, setProfile, goals, setGoals, water, diet, notes, setNotes, busy, error, onWater, onGenerate, onApply }: { profile: Profile; setProfile: (v: Profile) => void; goals: Goals; setGoals: (v: Goals) => void; water: number; diet: DietPlan | null; notes: string; setNotes: (v: string) => void; busy: boolean; error: string; onWater: (ml: number) => void; onGenerate: () => void; onApply: (kind: MealType, foods: DietPlan["days"][number]["meals"][MealType]) => void }) { return <><h1 className="text-2xl font-bold">Twój plan</h1><p className="mt-1 text-sm text-slate-500">Ustaw cele albo daj AI przygotować jadłospis.</p><section className="mt-5 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"><div className="flex justify-between"><div><h2 className="font-bold">Nawodnienie</h2><p className="mt-1 text-sm text-slate-500">Wypite: {water} / {profile.waterGoal} ml</p></div><span className="text-2xl">💧</span></div><div className="mt-4 grid grid-cols-3 gap-2">{[200,250,500].map((ml) => <button key={ml} className="rounded-xl bg-sky-50 py-2.5 text-sm font-bold text-sky-700" onClick={() => onWater(ml)}>+{ml} ml</button>)}</div></section><section className="mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"><h2 className="font-bold">Cele dzienne</h2><div className="mt-3 grid grid-cols-2 gap-3">{([['kcal','Kalorie (kcal)'],['protein','Białko (g)'],['fat','Tłuszcze (g)'],['carbs','Węglowodany (g)']] as const).map(([key,label]) => <Field key={key} label={label}><input className={input} inputMode="numeric" value={goals[key]} onChange={(e) => setGoals({ ...goals, [key]: Number(e.target.value) })} /></Field>)}</div></section><details className="mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"><summary className="cursor-pointer text-sm font-bold">Dopasuj plan do siebie</summary><div className="mt-4 grid grid-cols-2 gap-3"><Field label="Wiek"><input className={input} value={profile.age} onChange={(e) => setProfile({ ...profile, age: Number(e.target.value) })} /></Field><Field label="Waga (kg)"><input className={input} value={profile.weightKg} onChange={(e) => setProfile({ ...profile, weightKg: Number(e.target.value) })} /></Field><Field label="Wzrost (cm)"><input className={input} value={profile.heightCm} onChange={(e) => setProfile({ ...profile, heightCm: Number(e.target.value) })} /></Field><Field label="Cel"><select className={input} value={profile.goal} onChange={(e) => setProfile({ ...profile, goal: e.target.value as Profile["goal"] })}>{Object.entries(GOAL_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></Field></div><Field label="Aktywność"><select className={input} value={profile.activity} onChange={(e) => setProfile({ ...profile, activity: e.target.value as Profile["activity"] })}>{Object.entries(ACTIVITY_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></Field><button className="mt-3 text-sm font-bold text-emerald-600" onClick={() => setGoals(suggestedGoals(profile))}>Wylicz cele z profilu</button></details><section className="mt-4 rounded-2xl bg-emerald-950 p-4 text-white"><h2 className="font-bold">Plan z AI</h2><p className="mt-1 text-sm text-emerald-100">Dopisz preferencje, a dostaniesz plan na 7 dni.</p><textarea className="mt-3 min-h-20 w-full rounded-xl bg-white/10 p-3 text-sm text-white placeholder:text-emerald-100" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Np. 4 posiłki, bez ryb, tanie produkty…" /><button disabled={busy || !getKeys().length} className={`${primary} mt-3 w-full bg-white text-emerald-800`} onClick={onGenerate}>{busy ? "Układam plan…" : getKeys().length ? "Stwórz dietę AI" : "Dodaj klucz AI w ustawieniach"}</button>{error && <p className="mt-3 text-sm text-rose-200">{error}</p>}</section>{diet && <section className="mt-5"><h2 className="text-lg font-bold">{diet.title}</h2><p className="mt-1 text-sm text-slate-500">{diet.summary}</p>{diet.days.map((d) => <article key={d.label} className="mt-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"><h3 className="font-bold">{d.label}</h3>{MEALS.map((kind) => d.meals[kind]?.length ? <div key={kind} className="mt-3 border-t border-slate-100 pt-3"><div className="flex justify-between"><b className="text-xs text-slate-500">{MEAL_LABELS[kind]}</b><button className="text-xs font-bold text-emerald-600" onClick={() => onApply(kind,d.meals[kind])}>Dodaj do dziennika</button></div>{d.meals[kind].map((f,i) => <p key={`${f.name}-${i}`} className="mt-1 text-sm">{f.name} · {f.grams} g <span className="text-slate-500">· {f.kcal} kcal</span></p>)}</div> : null)}</article>)}</section>}</>; }
-
-function Recipes({ onAdd }: { onAdd: (r: typeof recipes[number]) => void }) { return <><h1 className="text-2xl font-bold">Przepisy</h1><p className="mt-1 text-sm text-slate-500">Proste inspiracje z pełnym makro. Otwórz wyszukiwanie, aby zobaczyć wersje z internetu.</p><div className="mt-5 space-y-3">{recipes.map((r) => <article key={r[0]} className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"><div className="flex justify-between gap-3"><div><span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700">{r[1]}</span><h2 className="mt-3 font-bold">{r[0]}</h2><p className="mt-1 text-sm text-slate-500">{r[6]}</p></div><b className="whitespace-nowrap text-sm">{r[2]} kcal</b></div><div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs"><div className="rounded-lg bg-sky-50 p-2 text-sky-800">Białko<br/><b>{r[3]} g</b></div><div className="rounded-lg bg-amber-50 p-2 text-amber-800">Tłuszcze<br/><b>{r[4]} g</b></div><div className="rounded-lg bg-violet-50 p-2 text-violet-800">Węglowodany<br/><b>{r[5]} g</b></div></div><div className="mt-4 grid grid-cols-2 gap-2"><button className="rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white" onClick={() => onAdd(r)}>Dodaj do dziennika</button><a className="rounded-xl bg-slate-100 py-2.5 text-center text-sm font-bold" target="_blank" rel="noreferrer" href={`https://www.google.com/search?q=${encodeURIComponent(r[0] + " przepis")}`}>Zobacz online</a></div></article>)}</div></>; }
-function Settings({ keys, value, setValue, onAdd, onRemove }: { keys: ReturnType<typeof keyStates>; value: string; setValue: (v:string) => void; onAdd: () => void; onRemove: (key:string) => void }) { return <><h1 className="text-2xl font-bold">Ustawienia</h1><section className="mt-5 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"><h2 className="font-bold">Klucze AI</h2><p className="mt-1 text-sm text-slate-500">Zostają tylko w tej przeglądarce. Aplikacja przełącza klucze automatycznie.</p><div className="mt-4 flex gap-2"><input className={input} value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-or-v1-…" /><button className={primary} disabled={!value.trim()} onClick={onAdd}>Dodaj</button></div><div className="mt-4 divide-y divide-slate-100">{keys.length ? keys.map((key) => <div key={key.key} className="flex justify-between py-3"><div><b className="font-mono text-xs">{key.label}</b><p className={`mt-1 text-xs ${key.paused ? "text-amber-600" : "text-emerald-600"}`}>{key.paused ? "Pauza po limicie" : `Klucz ${key.slot} · aktywny`}</p></div><button className="text-xs font-bold text-rose-500" onClick={() => onRemove(key.key)}>Usuń</button></div>) : <p className="py-4 text-center text-sm text-slate-500">Nie dodano jeszcze klucza.</p>}</div></section><section className="mt-4 rounded-2xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-900">Klucze są używane bezpośrednio z telefonu do OpenRouter. Nie udostępniaj apki z zapisanym kluczem innym osobom.</section></>; }
-function MealPicker({ meal, setMeal }: { meal: MealType; setMeal: (v:MealType) => void }) { return <div className="mt-4 flex gap-2 overflow-x-auto">{MEALS.map((m) => <button key={m} onClick={() => setMeal(m)} className={`shrink-0 rounded-full px-3 py-2 text-xs font-bold ${m === meal ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}>{MEAL_LABELS[m]}</button>)}</div>; }
-function Modal({ children, close }: { children: React.ReactNode; close: () => void }) { return <div className="fixed inset-0 z-40 flex items-end bg-slate-950/40" onMouseDown={close}><div className="max-h-[90dvh] w-full overflow-y-auto rounded-t-[28px] bg-white px-5 pb-[calc(24px+env(safe-area-inset-bottom))] pt-5 shadow-2xl" onMouseDown={(e) => e.stopPropagation()}><div className="mx-auto mb-5 h-1.5 w-10 rounded-full bg-slate-200" /><button className="float-right -mt-3 text-2xl text-slate-400" onClick={close}>×</button>{children}</div></div>; }
